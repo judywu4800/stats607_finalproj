@@ -8,8 +8,8 @@ stats607_finalproj
 ├── doc
 │   ├── demo_notebook.ipynb
 │   └── report_Wu.md
+├── Makefile
 ├── profiling
-│   ├── prof_merge.prof
 │   └── profile_test.py
 ├── README.md
 ├── requirements.txt
@@ -19,12 +19,15 @@ stats607_finalproj
 │   │   ├── profiling.png
 │   │   └── qq_plot_combined_K3.png
 │   └── raw
+│       ├── prof_merge.prof
+│       ├── pval_validity_randomized_K3_ntrials10.csv
 │       └── pval_validity_randomized_K3.csv
 ├── src
 │   ├── __pycache__
 │   │   ├── dgps.cpython-310.pyc
 │   │   ├── hierarchical_clustering_invariant.cpython-310.pyc
 │   │   ├── plot_ecdf.cpython-310.pyc
+│   │   ├── run_validity.cpython-310.pyc
 │   │   └── utils.cpython-310.pyc
 │   ├── dgps.py
 │   ├── hierarchical_clustering_invariant.py
@@ -32,7 +35,10 @@ stats607_finalproj
 │   ├── run_validity.py
 │   └── utils.py
 └── tests
+    ├── __pycache__
+    │   └── test_pval.cpython-310-pytest-9.0.2.pyc
     └── test_pval.py
+
 ```
 
 * Source code and simulation codes are saved under `src/`.
