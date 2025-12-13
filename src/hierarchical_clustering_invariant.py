@@ -608,6 +608,7 @@ class AgglomerativeClustering:
                 if ncoarse is None:
                     sel_probs = self._sel_correction_F(node,stat_grid,P2, R0, R1, S)
                     p = self.p
+                    sel_probs = sel_probs.sum(axis=1)
                     log_prior = np.zeros(ngrid)
                     for g in range(ngrid):
                         log_prior[g] = f.logpdf(x=stat_grid[g], dfn=p, dfd=(m - 2) * p)
@@ -702,6 +703,170 @@ class AgglomerativeClustering:
                 posterior = np.zeros(ngrid)
                 for g in range(ngrid):
                     posterior[g] = f.pdf(stat_grid[g],p,(m-2)*p)
+
+                sum = 0
+                num = 0
+                for g in range(ngrid):
+                    sum += posterior[g]
+                    if stat_grid[g] >= observed_target:
+                        num += posterior[g]
+                p_value = num / sum
+
+        return (p_value, observed_target, sel_probs)
+
+    def merge_inference_F_grid(self, node, ngrid=10000, ncoarse=20, grid_width=15):
+        def get_fine_grid(cdf, grid, qlow = 0.005, qhigh = 0.995,buffer = 3):
+            low = np.interp(qlow, cdf, grid)
+            high = np.interp(qhigh, cdf, grid)
+            width = high - low
+            low = max(grid.min(), low - buffer * width)
+            high = min(grid.max(), high + buffer * width)
+            print(low,high)
+            return low, high
+
+        def get_corrected_cdf(sel_probs, dfn, dfd, grid):
+            sel_log = np.asarray(sel_probs).reshape(-1)
+            log_prior = f.logpdf(grid, dfn, dfd)
+            log_post = log_prior + sel_log
+            dx = np.gradient(grid)
+            unnorm = np.exp(log_post - log_post.max())
+            Z = (unnorm * dx).sum() + 1e-300
+            corr_pdf = unnorm / Z
+            w = corr_pdf * dx
+            cdf = np.cumsum(w)
+            cdf /= cdf[-1]
+            return cdf
+        def create_indicator_diagonal_matrix(index_list, n):
+            diag = np.zeros(n)
+            diag[index_list] = 1
+            return np.diag(diag), diag
+
+        if self.tau != 0:
+            nu = self.compute_nu(node).reshape(-1, 1)
+            p_node_1 = node.left
+            p_node_2 = node.right
+            m = len(p_node_1.points) + len(p_node_2.points)
+            if m == 2:
+                p_value = np.nan
+                observed_target = np.nan
+                sel_probs = np.nan
+
+            else:
+                P0 = nu @ nu.T / np.linalg.norm(nu) ** 2
+                I1, one1 = create_indicator_diagonal_matrix(p_node_1.points, self.n)
+                I2, one2 = create_indicator_diagonal_matrix(p_node_2.points, self.n)
+                one1 = one1.reshape(-1, 1)
+                one2 = one2.reshape(-1, 1)
+                P1 = (I1 - one1 @ one1.T / len(p_node_1.points)) + (I2 - one2 @ one2.T / len(p_node_2.points))
+                P2 = np.eye(self.n) - P0 - P1
+
+                S = np.linalg.norm(P0 @ self.X, 'fro') ** 2 + np.linalg.norm(P1 @ self.X, 'fro') ** 2
+                R0 = (P0 @ self.X) / np.linalg.norm(P0 @ self.X, 'fro')
+                R1 = (P1 @ self.X) / np.linalg.norm(P1 @ self.X, 'fro')
+
+                stat_grid = np.linspace(0.00001, grid_width, num=ngrid)
+                observed_target = (m - 2) * np.linalg.norm(P0 @ self.X, 'fro') ** 2 / (
+                            np.linalg.norm(P1 @ self.X, 'fro') ** 2)
+                if ncoarse is not None:
+                    coarse_grid = np.linspace(0.00001, grid_width, ncoarse)
+                    eval_grid = coarse_grid
+                else:
+                    eval_grid = stat_grid
+
+                if ncoarse is None:
+                    sel_probs = self._sel_correction_F(node, stat_grid, P2, R0, R1, S)
+                    p = self.p
+                    log_prior = np.zeros(ngrid)
+                    for g in range(ngrid):
+                        log_prior[g] = f.logpdf(x=stat_grid[g], dfn=p, dfd=(m - 2) * p)
+                    log_post = log_prior + sel_probs
+                    posterior = np.exp(log_post)
+
+                    sum = 0
+                    num = 0
+                    for g in range(ngrid):
+                        sum += posterior[g]
+                        if stat_grid[g] >= observed_target:
+                            num += posterior[g]
+                    p_value = num / sum
+                else:
+                    grid = np.linspace(0.00001, grid_width, num=ngrid)
+                    dfn, dfd = self.p, (m - 2) * self.p
+                    sel_probs_coarse = self._sel_correction_F(node, eval_grid, P2, R0, R1, S)
+                    step = sel_probs_coarse.shape[1]
+
+                    # intropolation to get correction on fine grid
+                    interpolation = np.array([
+                        interp1d(eval_grid, sel_probs_coarse[:, s],
+                                 kind='quadratic',
+                                 bounds_error=False,
+                                 fill_value='extrapolate')(grid)
+                        for s in range(step)
+                    ])
+                    sel_probs = interpolation.sum(axis=0)
+
+                    # compute corrected cdf to get shorter grid
+                    corr_cdf = get_corrected_cdf(sel_probs, dfn, dfd, grid)
+                    low, high = get_fine_grid(corr_cdf, grid)
+                    new_coarse_grid = np.linspace(low, high, ncoarse)
+                    fine_grid = np.linspace(low, high, ngrid * 2)
+
+                    sel_probs_coarse = self._sel_correction_F(node, new_coarse_grid, P2, R0, R1, S)
+                    interpolation = np.array([
+                        interp1d(new_coarse_grid, sel_probs_coarse[:, s],
+                                 kind='quadratic',
+                                 bounds_error=False,
+                                 fill_value='extrapolate')(fine_grid)
+                        for s in range(step)
+                    ])
+
+                    log_prior = f.logpdf(x=fine_grid, dfn=dfn, dfd=dfd)
+                    sel_probs = interpolation.sum(axis=0)
+                    log_post = log_prior + sel_probs
+                    #posterior = np.exp(log_post)
+
+                    #posterior = posterior / np.max(posterior)
+                    log_post_shift = log_post - np.max(log_post)
+                    posterior = np.exp(log_post_shift)
+                    posterior_sum = posterior.sum()
+                    if posterior_sum == 0 or np.isnan(posterior_sum):
+                        # fallback: use uniform distribution to avoid nan
+                        posterior = np.ones_like(posterior) / len(posterior)
+                    else:
+                        posterior = posterior / posterior_sum
+                    sum = 0
+                    num = 0
+                    for g in range(ngrid*2):
+                        sum += posterior[g]
+                        if fine_grid[g] >= (observed_target):
+                            num += posterior[g]
+                    p_value = num / sum
+        else:
+            nu = self.compute_nu(node).reshape(-1, 1)
+            p_node_1 = node.left
+            p_node_2 = node.right
+            m = len(p_node_1.points) + len(p_node_2.points)
+            if m == 2:
+                p_value = np.nan
+                observed_target = np.nan
+                sel_probs = np.nan
+            else:
+                P0 = nu @ nu.T / np.linalg.norm(nu) ** 2
+                I1, one1 = create_indicator_diagonal_matrix(p_node_1.points, self.n)
+                I2, one2 = create_indicator_diagonal_matrix(p_node_2.points, self.n)
+                one1 = one1.reshape(-1, 1)
+                one2 = one2.reshape(-1, 1)
+                P1 = (I1 - one1 @ one1.T / len(p_node_1.points)) + (I2 - one2 @ one2.T / len(p_node_2.points))
+
+                stat_grid = np.linspace(0.00001, grid_width, num=ngrid)
+                observed_target = (m - 2) * np.linalg.norm(P0 @ self.X, 'fro') ** 2 / np.linalg.norm(P1 @ self.X,
+                                                                                                     'fro') ** 2
+
+                sel_probs = 0
+                p = self.p
+                posterior = np.zeros(ngrid)
+                for g in range(ngrid):
+                    posterior[g] = f.pdf(stat_grid[g], p, (m - 2) * p)
 
                 sum = 0
                 num = 0
